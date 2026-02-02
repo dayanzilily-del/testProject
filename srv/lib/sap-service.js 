@@ -1,0 +1,333 @@
+const cds = require('@sap/cds');
+
+/**
+ * SAP連携サービス
+ * SAP標準APIとの通信を共通化
+ */
+class SAPService {
+  constructor() {
+    this.destination = null;
+  }
+
+  /**
+   * 初期化（Destinationを取得）
+   */
+  async init() {
+    if (!this.destination) {
+      this.destination = await cds.connect.to('SAPODataService');
+    }
+    return this.destination;
+  }
+
+  /**
+   * 会社マスタを取得
+   * @returns {Array} 会社マスタ配列
+   */
+  async getCompanies() {
+    await this.init();
+    
+    try {
+      // SAP標準のCompany Code APIを使用
+      const response = await this.destination.run(
+        SELECT.from('CompanyCodeSet').columns(['CompanyCode', 'CompanyCodeName'])
+      );
+      
+      return response.map(item => ({
+        companyCode: item.CompanyCode,
+        companyName: item.CompanyCodeName
+      }));
+    } catch (error) {
+      console.error('SAP会社マスタ取得エラー:', error);
+      throw new Error(`会社マスタの取得に失敗しました: ${error.message}`);
+    }
+  }
+
+  /**
+   * 会計伝票ヘッダーを取得
+   * @param {String} applicationId - 申請ID
+   * @returns {Object} 会計伝票ヘッダー
+   */
+  async getAccountingDocument(applicationId) {
+    await this.init();
+    
+    try {
+      // 申請IDから会計伝票番号を取得
+      // 実装は実際のデータモデルに応じて調整
+      const docNumber = await this.getDocumentNumber(applicationId);
+      
+      if (!docNumber) {
+        return null;
+      }
+      
+      // 会計伝票ヘッダーを取得
+      const header = await this.destination.run(
+        SELECT.one.from('AccountingDocumentHeaderSet')
+          .where({ 
+            AccountingDocument: docNumber.documentNumber,
+            FiscalYear: docNumber.fiscalYear,
+            CompanyCode: docNumber.companyCode
+          })
+      );
+      
+      if (!header) {
+        return null;
+      }
+      
+      // 明細を取得
+      const items = await this.getAccountingDocumentItems(
+        docNumber.documentNumber,
+        docNumber.fiscalYear,
+        docNumber.companyCode
+      );
+      
+      return {
+        documentNumber: header.AccountingDocument,
+        fiscalYear: header.FiscalYear,
+        companyCode: header.CompanyCode,
+        documentType: header.AccountingDocumentType,
+        postingDate: header.PostingDate,
+        documentDate: header.DocumentDate,
+        reference: header.DocumentReferenceID,
+        headerText: header.DocumentHeaderText,
+        items: items
+      };
+    } catch (error) {
+      console.error('SAP会計伝票取得エラー:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 会計伝票明細を取得
+   * @param {String} documentNumber - 伝票番号
+   * @param {String} fiscalYear - 会計年度
+   * @param {String} companyCode - 会社コード
+   * @returns {Array} 会計伝票明細配列
+   */
+  async getAccountingDocumentItems(documentNumber, fiscalYear, companyCode) {
+    await this.init();
+    
+    try {
+      const response = await this.destination.run(
+        SELECT.from('AccountingDocumentItemSet')
+          .where({
+            AccountingDocument: documentNumber,
+            FiscalYear: fiscalYear,
+            CompanyCode: companyCode
+          })
+          .orderBy('AccountingDocumentItem')
+      );
+      
+      return response.map(item => ({
+        itemNumber: item.AccountingDocumentItem,
+        glAccount: item.GLAccount,
+        glAccountName: item.GLAccountName,
+        amount: item.AmountInCompanyCodeCurrency,
+        currency: item.CompanyCodeCurrency,
+        debitCredit: item.DebitCreditCode,
+        costCenter: item.CostCenter,
+        profitCenter: item.ProfitCenter,
+        itemText: item.DocumentItemText
+      }));
+    } catch (error) {
+      console.error('SAP会計伝票明細取得エラー:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 申請IDから会計伝票番号を取得
+   * @param {String} applicationId - 申請ID
+   * @returns {Object} 伝票情報
+   */
+  async getDocumentNumber(applicationId) {
+    // 実装は実際のマッピングテーブルまたはロジックに応じて調整
+    // ここでは例として実装
+    try {
+      // カスタムテーブルまたはマッピングから取得
+      const mapping = await SELECT.one
+        .from('ApplicationDocumentMapping')
+        .where({ applicationId });
+      
+      return mapping ? {
+        documentNumber: mapping.documentNumber,
+        fiscalYear: mapping.fiscalYear,
+        companyCode: mapping.companyCode
+      } : null;
+    } catch (error) {
+      console.error('伝票番号取得エラー:', error);
+      return null;
+    }
+  }
+
+  /**
+   * G/L勘定マスタを取得
+   * @param {String} companyCode - 会社コード
+   * @returns {Array} G/L勘定マスタ配列
+   */
+  async getGLAccounts(companyCode) {
+    await this.init();
+    
+    try {
+      const response = await this.destination.run(
+        SELECT.from('GLAccountSet')
+          .where({ CompanyCode: companyCode })
+          .columns(['GLAccount', 'GLAccountName'])
+      );
+      
+      return response.map(item => ({
+        glAccount: item.GLAccount,
+        glAccountName: item.GLAccountName
+      }));
+    } catch (error) {
+      console.error('SAPG/L勘定マスタ取得エラー:', error);
+      return [];
+    }
+  }
+
+  /**
+   * コストセンターマスタを取得
+   * @param {String} controllingArea - 管理領域
+   * @returns {Array} コストセンターマスタ配列
+   */
+  async getCostCenters(controllingArea) {
+    await this.init();
+    
+    try {
+      const response = await this.destination.run(
+        SELECT.from('CostCenterSet')
+          .where({ ControllingArea: controllingArea })
+          .columns(['CostCenter', 'CostCenterName'])
+      );
+      
+      return response.map(item => ({
+        costCenter: item.CostCenter,
+        costCenterName: item.CostCenterName
+      }));
+    } catch (error) {
+      console.error('SAPコストセンターマスタ取得エラー:', error);
+      return [];
+    }
+  }
+
+  /**
+   * プロフィットセンターマスタを取得
+   * @param {String} controllingArea - 管理領域
+   * @returns {Array} プロフィットセンターマスタ配列
+   */
+  async getProfitCenters(controllingArea) {
+    await this.init();
+    
+    try {
+      const response = await this.destination.run(
+        SELECT.from('ProfitCenterSet')
+          .where({ ControllingArea: controllingArea })
+          .columns(['ProfitCenter', 'ProfitCenterName'])
+      );
+      
+      return response.map(item => ({
+        profitCenter: item.ProfitCenter,
+        profitCenterName: item.ProfitCenterName
+      }));
+    } catch (error) {
+      console.error('SAPプロフィットセンターマスタ取得エラー:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 通貨マスタを取得
+   * @returns {Array} 通貨マスタ配列
+   */
+  async getCurrencies() {
+    await this.init();
+    
+    try {
+      const response = await this.destination.run(
+        SELECT.from('CurrencySet').columns(['Currency', 'CurrencyName'])
+      );
+      
+      return response.map(item => ({
+        currency: item.Currency,
+        currencyName: item.CurrencyName
+      }));
+    } catch (error) {
+      console.error('SAP通貨マスタ取得エラー:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 会計伝票を転記
+   * @param {Object} documentData - 伝票データ
+   * @returns {Object} 転記結果
+   */
+  async postAccountingDocument(documentData) {
+    await this.init();
+    
+    try {
+      // 会計伝票転記API呼び出し
+      const response = await this.destination.send({
+        method: 'POST',
+        path: '/AccountingDocumentHeaderSet',
+        data: {
+          CompanyCode: documentData.companyCode,
+          DocumentDate: documentData.documentDate,
+          PostingDate: documentData.postingDate,
+          DocumentType: documentData.documentType,
+          DocumentHeaderText: documentData.headerText,
+          DocumentReferenceID: documentData.reference,
+          to_Item: documentData.items.map(item => ({
+            GLAccount: item.glAccount,
+            AmountInCompanyCodeCurrency: item.amount,
+            CompanyCodeCurrency: item.currency,
+            DebitCreditCode: item.debitCredit,
+            CostCenter: item.costCenter,
+            ProfitCenter: item.profitCenter,
+            DocumentItemText: item.itemText
+          }))
+        }
+      });
+      
+      return {
+        success: true,
+        documentNumber: response.AccountingDocument,
+        fiscalYear: response.FiscalYear,
+        message: '会計伝票を転記しました'
+      };
+    } catch (error) {
+      console.error('SAP会計伝票転記エラー:', error);
+      throw new Error(`会計伝票の転記に失敗しました: ${error.message}`);
+    }
+  }
+
+  /**
+   * 会計伝票を取消
+   * @param {String} documentNumber - 伝票番号
+   * @param {String} fiscalYear - 会計年度
+   * @param {String} companyCode - 会社コード
+   * @returns {Object} 取消結果
+   */
+  async reverseAccountingDocument(documentNumber, fiscalYear, companyCode) {
+    await this.init();
+    
+    try {
+      const response = await this.destination.send({
+        method: 'POST',
+        path: `/AccountingDocumentHeaderSet(AccountingDocument='${documentNumber}',FiscalYear='${fiscalYear}',CompanyCode='${companyCode}')/Reverse`,
+        data: {}
+      });
+      
+      return {
+        success: true,
+        reversalDocument: response.AccountingDocument,
+        message: '会計伝票を取消しました'
+      };
+    } catch (error) {
+      console.error('SAP会計伝票取消エラー:', error);
+      throw new Error(`会計伝票の取消に失敗しました: ${error.message}`);
+    }
+  }
+}
+
+module.exports = SAPService;

@@ -1,0 +1,79 @@
+using approval from '../db/schema';
+
+service ApprovalService @(path: '/api/approval') {
+
+  // 申請一覧のエンティティ（読み取り・検索用）
+  entity Applications as projection on approval.Applications {
+    *,
+    status.name as statusName,
+    type.name as typeName
+  } actions {
+    // カスタムアクション
+    action submit() returns String;
+    action withdraw() returns String;
+    action discard() returns String;
+  };
+
+  // 詳細画面用のエンティティ（すべての関連データを含む）
+  entity ApplicationDetails as projection on approval.Applications {
+    *,
+    status,
+    type,
+    approvers,
+    approvalHistory,
+    comments,
+    accountingDocument {
+      *,
+      items
+    }
+  };
+
+  // マスタデータ
+  @readonly entity Statuses as projection on approval.Statuses;
+  @readonly entity Types as projection on approval.Types;
+
+  // 承認者情報
+  entity Approvers as projection on approval.Approvers;
+  
+  // 承認履歴
+  @readonly entity ApprovalHistory as projection on approval.ApprovalHistory;
+  
+  // コメント
+  entity Comments as projection on approval.Comments;
+
+  // 会計伝票
+  @readonly entity AccountingDocuments as projection on approval.AccountingDocument;
+  @readonly entity AccountingDocumentItems as projection on approval.AccountingDocumentItems;
+
+  // 添付ファイル管理
+  entity Attachments as projection on approval.Attachments actions {
+    action upload(content: LargeBinary, fileName: String, mimeType: String) returns Attachments;
+    action download() returns LargeBinary;
+    action delete() returns String;
+  };
+
+  // カスタムファンクション
+  function getApplicationById(applicationId: String) returns ApplicationDetails;
+  function searchApplications(
+    status: String,
+    type: String,
+    companyCode: String,
+    startDate: Date,
+    endDate: Date,
+    requester: String
+  ) returns array of Applications;
+
+  // BPA連携用のファンクション
+  function syncFromBPA(applicationId: String) returns String;
+  function submitToBPA(applicationId: String) returns String;
+  
+  // 承認アクション
+  action approveApplication(applicationId: String, comment: String) returns String;
+  action rejectApplication(applicationId: String, comment: String) returns String;
+  
+  // 会社マスタ取得（SAP標準APIから）
+  function getCompanies() returns array of {
+    companyCode: String;
+    companyName: String;
+  };
+}
