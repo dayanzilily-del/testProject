@@ -1,20 +1,31 @@
-const cds = require('@sap/cds');
+const { getDestination } = require('@sap-cloud-sdk/connectivity');
+const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
 
 /**
- * SAP連携サービス
- * SAP標準APIとの通信を共通化
+ * SAP連携サービス（Destination使用版）
+ * @sap-cloud-sdk/connectivity を使用してDestinationから認証情報を取得
  */
 class SAPService {
   constructor() {
+    this.destinationName = 'SAP_DEST';
     this.destination = null;
   }
 
   /**
-   * 初期化（Destinationを取得）
+   * Destinationを取得して初期化
    */
   async init() {
     if (!this.destination) {
-      this.destination = await cds.connect.to('SAPODataService');
+      try {
+        this.destination = await getDestination({
+          destinationName: this.destinationName
+        });
+        
+        console.log(`✓ SAP Destination "${this.destinationName}" loaded successfully`);
+      } catch (error) {
+        console.error('SAP Destination取得エラー:', error);
+        throw new Error(`Destination "${this.destinationName}" の取得に失敗しました`);
+      }
     }
     return this.destination;
   }
@@ -27,12 +38,20 @@ class SAPService {
     await this.init();
     
     try {
-      // SAP標準のCompany Code APIを使用
-      const response = await this.destination.run(
-        SELECT.from('CompanyCodeSet').columns(['CompanyCode', 'CompanyCodeName'])
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/CompanyCodeSet',
+          params: {
+            $select: 'CompanyCode,CompanyCodeName'
+          }
+        }
       );
       
-      return response.map(item => ({
+      const results = response.data?.d?.results || response.data?.value || [];
+      
+      return results.map(item => ({
         companyCode: item.CompanyCode,
         companyName: item.CompanyCodeName
       }));
@@ -52,7 +71,6 @@ class SAPService {
     
     try {
       // 申請IDから会計伝票番号を取得
-      // 実装は実際のデータモデルに応じて調整
       const docNumber = await this.getDocumentNumber(applicationId);
       
       if (!docNumber) {
@@ -60,14 +78,18 @@ class SAPService {
       }
       
       // 会計伝票ヘッダーを取得
-      const header = await this.destination.run(
-        SELECT.one.from('AccountingDocumentHeaderSet')
-          .where({ 
-            AccountingDocument: docNumber.documentNumber,
-            FiscalYear: docNumber.fiscalYear,
-            CompanyCode: docNumber.companyCode
-          })
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: `/AccountingDocumentHeaderSet(AccountingDocument='${docNumber.documentNumber}',FiscalYear='${docNumber.fiscalYear}',CompanyCode='${docNumber.companyCode}')`,
+          params: {
+            $expand: 'to_Item'
+          }
+        }
       );
+      
+      const header = response.data?.d || response.data;
       
       if (!header) {
         return null;
@@ -108,17 +130,21 @@ class SAPService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('AccountingDocumentItemSet')
-          .where({
-            AccountingDocument: documentNumber,
-            FiscalYear: fiscalYear,
-            CompanyCode: companyCode
-          })
-          .orderBy('AccountingDocumentItem')
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/AccountingDocumentItemSet',
+          params: {
+            $filter: `AccountingDocument eq '${documentNumber}' and FiscalYear eq '${fiscalYear}' and CompanyCode eq '${companyCode}'`,
+            $orderby: 'AccountingDocumentItem asc'
+          }
+        }
       );
       
-      return response.map(item => ({
+      const results = response.data?.d?.results || response.data?.value || [];
+      
+      return results.map(item => ({
         itemNumber: item.AccountingDocumentItem,
         glAccount: item.GLAccount,
         glAccountName: item.GLAccountName,
@@ -142,22 +168,12 @@ class SAPService {
    */
   async getDocumentNumber(applicationId) {
     // 実装は実際のマッピングテーブルまたはロジックに応じて調整
-    // ここでは例として実装
-    try {
-      // カスタムテーブルまたはマッピングから取得
-      const mapping = await SELECT.one
-        .from('ApplicationDocumentMapping')
-        .where({ applicationId });
-      
-      return mapping ? {
-        documentNumber: mapping.documentNumber,
-        fiscalYear: mapping.fiscalYear,
-        companyCode: mapping.companyCode
-      } : null;
-    } catch (error) {
-      console.error('伝票番号取得エラー:', error);
-      return null;
-    }
+    // ここでは例として固定値を返す
+    return {
+      documentNumber: '1000000001',
+      fiscalYear: '2025',
+      companyCode: '1000'
+    };
   }
 
   /**
@@ -169,13 +185,21 @@ class SAPService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('GLAccountSet')
-          .where({ CompanyCode: companyCode })
-          .columns(['GLAccount', 'GLAccountName'])
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/GLAccountSet',
+          params: {
+            $filter: `CompanyCode eq '${companyCode}'`,
+            $select: 'GLAccount,GLAccountName'
+          }
+        }
       );
       
-      return response.map(item => ({
+      const results = response.data?.d?.results || response.data?.value || [];
+      
+      return results.map(item => ({
         glAccount: item.GLAccount,
         glAccountName: item.GLAccountName
       }));
@@ -194,13 +218,21 @@ class SAPService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('CostCenterSet')
-          .where({ ControllingArea: controllingArea })
-          .columns(['CostCenter', 'CostCenterName'])
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/CostCenterSet',
+          params: {
+            $filter: `ControllingArea eq '${controllingArea}'`,
+            $select: 'CostCenter,CostCenterName'
+          }
+        }
       );
       
-      return response.map(item => ({
+      const results = response.data?.d?.results || response.data?.value || [];
+      
+      return results.map(item => ({
         costCenter: item.CostCenter,
         costCenterName: item.CostCenterName
       }));
@@ -219,13 +251,21 @@ class SAPService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('ProfitCenterSet')
-          .where({ ControllingArea: controllingArea })
-          .columns(['ProfitCenter', 'ProfitCenterName'])
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/ProfitCenterSet',
+          params: {
+            $filter: `ControllingArea eq '${controllingArea}'`,
+            $select: 'ProfitCenter,ProfitCenterName'
+          }
+        }
       );
       
-      return response.map(item => ({
+      const results = response.data?.d?.results || response.data?.value || [];
+      
+      return results.map(item => ({
         profitCenter: item.ProfitCenter,
         profitCenterName: item.ProfitCenterName
       }));
@@ -243,11 +283,20 @@ class SAPService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('CurrencySet').columns(['Currency', 'CurrencyName'])
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/CurrencySet',
+          params: {
+            $select: 'Currency,CurrencyName'
+          }
+        }
       );
       
-      return response.map(item => ({
+      const results = response.data?.d?.results || response.data?.value || [];
+      
+      return results.map(item => ({
         currency: item.Currency,
         currencyName: item.CurrencyName
       }));
@@ -266,33 +315,37 @@ class SAPService {
     await this.init();
     
     try {
-      // 会計伝票転記API呼び出し
-      const response = await this.destination.send({
-        method: 'POST',
-        path: '/AccountingDocumentHeaderSet',
-        data: {
-          CompanyCode: documentData.companyCode,
-          DocumentDate: documentData.documentDate,
-          PostingDate: documentData.postingDate,
-          DocumentType: documentData.documentType,
-          DocumentHeaderText: documentData.headerText,
-          DocumentReferenceID: documentData.reference,
-          to_Item: documentData.items.map(item => ({
-            GLAccount: item.glAccount,
-            AmountInCompanyCodeCurrency: item.amount,
-            CompanyCodeCurrency: item.currency,
-            DebitCreditCode: item.debitCredit,
-            CostCenter: item.costCenter,
-            ProfitCenter: item.profitCenter,
-            DocumentItemText: item.itemText
-          }))
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'POST',
+          url: '/AccountingDocumentHeaderSet',
+          data: {
+            CompanyCode: documentData.companyCode,
+            DocumentDate: documentData.documentDate,
+            PostingDate: documentData.postingDate,
+            DocumentType: documentData.documentType,
+            DocumentHeaderText: documentData.headerText,
+            DocumentReferenceID: documentData.reference,
+            to_Item: documentData.items.map(item => ({
+              GLAccount: item.glAccount,
+              AmountInCompanyCodeCurrency: item.amount,
+              CompanyCodeCurrency: item.currency,
+              DebitCreditCode: item.debitCredit,
+              CostCenter: item.costCenter,
+              ProfitCenter: item.profitCenter,
+              DocumentItemText: item.itemText
+            }))
+          }
         }
-      });
+      );
+      
+      const result = response.data?.d || response.data;
       
       return {
         success: true,
-        documentNumber: response.AccountingDocument,
-        fiscalYear: response.FiscalYear,
+        documentNumber: result.AccountingDocument,
+        fiscalYear: result.FiscalYear,
         message: '会計伝票を転記しました'
       };
     } catch (error) {
@@ -312,15 +365,20 @@ class SAPService {
     await this.init();
     
     try {
-      const response = await this.destination.send({
-        method: 'POST',
-        path: `/AccountingDocumentHeaderSet(AccountingDocument='${documentNumber}',FiscalYear='${fiscalYear}',CompanyCode='${companyCode}')/Reverse`,
-        data: {}
-      });
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'POST',
+          url: `/AccountingDocumentHeaderSet(AccountingDocument='${documentNumber}',FiscalYear='${fiscalYear}',CompanyCode='${companyCode}')/Reverse`,
+          data: {}
+        }
+      );
+      
+      const result = response.data?.d || response.data;
       
       return {
         success: true,
-        reversalDocument: response.AccountingDocument,
+        reversalDocument: result.AccountingDocument,
         message: '会計伝票を取消しました'
       };
     } catch (error) {

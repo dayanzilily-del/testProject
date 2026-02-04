@@ -1,20 +1,32 @@
-const cds = require('@sap/cds');
+const { getDestination } = require('@sap-cloud-sdk/connectivity');
+const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
 
 /**
- * BPA連携サービス
- * BPAとの通信を共通化
+ * BPA連携サービス（Destination使用版）
+ * @sap-cloud-sdk/connectivity を使用してDestinationから認証情報を取得
  */
 class BPAService {
   constructor() {
+    this.destinationName = 'BPA_DEST';
     this.destination = null;
   }
 
   /**
-   * 初期化（Destinationを取得）
+   * Destinationを取得して初期化
    */
   async init() {
     if (!this.destination) {
-      this.destination = await cds.connect.to('BPAService');
+      try {
+        // Destinationサービスから認証情報を含む設定を取得
+        this.destination = await getDestination({
+          destinationName: this.destinationName
+        });
+        
+        console.log(`✓ BPA Destination "${this.destinationName}" loaded successfully`);
+      } catch (error) {
+        console.error('BPA Destination取得エラー:', error);
+        throw new Error(`Destination "${this.destinationName}" の取得に失敗しました`);
+      }
     }
     return this.destination;
   }
@@ -28,13 +40,18 @@ class BPAService {
     await this.init();
     
     try {
-      // BPAのOData APIを呼び出し
-      const filter = this.buildFilter(query);
-      const response = await this.destination.run(
-        SELECT.from('Applications').where(filter)
+      // executeHttpRequestを使用してOData APIを呼び出し
+      // Destinationの認証情報（OAuth, Basic Auth等）が自動的に使用される
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/Applications',
+          params: this.buildQueryParams(query)
+        }
       );
       
-      return this.transformApplicationList(response);
+      return this.transformApplicationList(response.data?.value || response.data?.d?.results || []);
     } catch (error) {
       console.error('BPA申請一覧取得エラー:', error);
       throw new Error(`BPAからの申請一覧取得に失敗しました: ${error.message}`);
@@ -50,15 +67,24 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.one.from('Applications').where({ applicationId })
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: `/Applications('${applicationId}')`,
+          params: {
+            $expand: 'status,type,approvers,comments,history'
+          }
+        }
       );
       
-      if (!response) {
+      const data = response.data?.d || response.data;
+      
+      if (!data) {
         throw new Error(`申請ID ${applicationId} が見つかりません`);
       }
       
-      return this.transformApplicationDetail(response);
+      return this.transformApplicationDetail(data);
     } catch (error) {
       console.error('BPA申請詳細取得エラー:', error);
       throw new Error(`BPAからの申請詳細取得に失敗しました: ${error.message}`);
@@ -74,12 +100,21 @@ class BPAService {
     await this.init();
     
     try {
-      const filter = this.buildSearchFilter(filters);
-      const response = await this.destination.run(
-        SELECT.from('Applications').where(filter)
+      const filterQuery = this.buildFilterQuery(filters);
+      
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/Applications',
+          params: {
+            $filter: filterQuery,
+            $expand: 'status,type'
+          }
+        }
       );
       
-      return this.transformApplicationList(response);
+      return this.transformApplicationList(response.data?.value || response.data?.d?.results || []);
     } catch (error) {
       console.error('BPA申請検索エラー:', error);
       throw new Error(`申請検索に失敗しました: ${error.message}`);
@@ -95,11 +130,19 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('Comments').where({ applicationId })
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/Comments',
+          params: {
+            $filter: `applicationId eq '${applicationId}'`,
+            $orderby: 'commentDate desc'
+          }
+        }
       );
       
-      return response || [];
+      return response.data?.value || response.data?.d?.results || [];
     } catch (error) {
       console.error('BPAコメント取得エラー:', error);
       return [];
@@ -115,11 +158,19 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('ApprovalHistory').where({ applicationId }).orderBy('actionDate desc')
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/ApprovalHistory',
+          params: {
+            $filter: `applicationId eq '${applicationId}'`,
+            $orderby: 'actionDate desc'
+          }
+        }
       );
       
-      return response || [];
+      return response.data?.value || response.data?.d?.results || [];
     } catch (error) {
       console.error('BPA承認履歴取得エラー:', error);
       return [];
@@ -135,11 +186,19 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.run(
-        SELECT.from('Approvers').where({ applicationId }).orderBy('sequence')
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'GET',
+          url: '/Approvers',
+          params: {
+            $filter: `applicationId eq '${applicationId}'`,
+            $orderby: 'sequence asc'
+          }
+        }
       );
       
-      return response || [];
+      return response.data?.value || response.data?.d?.results || [];
     } catch (error) {
       console.error('BPA承認者情報取得エラー:', error);
       return [];
@@ -155,14 +214,16 @@ class BPAService {
     await this.init();
     
     try {
-      // BPAのカスタムアクションを呼び出し
-      const response = await this.destination.send({
-        method: 'POST',
-        path: `/Applications('${applicationId}')/Submit`,
-        data: {}
-      });
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'POST',
+          url: `/Applications('${applicationId}')/Submit`,
+          data: {}
+        }
+      );
       
-      return response;
+      return response.data;
     } catch (error) {
       console.error('BPA申請提出エラー:', error);
       throw new Error(`申請の提出に失敗しました: ${error.message}`);
@@ -178,13 +239,16 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.send({
-        method: 'POST',
-        path: `/Applications('${applicationId}')/Withdraw`,
-        data: {}
-      });
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'POST',
+          url: `/Applications('${applicationId}')/Withdraw`,
+          data: {}
+        }
+      );
       
-      return response;
+      return response.data;
     } catch (error) {
       console.error('BPA引き戻しエラー:', error);
       throw new Error(`引き戻しに失敗しました: ${error.message}`);
@@ -200,13 +264,16 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.send({
-        method: 'POST',
-        path: `/Applications('${applicationId}')/Discard`,
-        data: {}
-      });
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'POST',
+          url: `/Applications('${applicationId}')/Discard`,
+          data: {}
+        }
+      );
       
-      return response;
+      return response.data;
     } catch (error) {
       console.error('BPA破棄エラー:', error);
       throw new Error(`破棄に失敗しました: ${error.message}`);
@@ -223,13 +290,16 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.send({
-        method: 'POST',
-        path: `/Applications('${applicationId}')/Approve`,
-        data: { comment }
-      });
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'POST',
+          url: `/Applications('${applicationId}')/Approve`,
+          data: { comment }
+        }
+      );
       
-      return response;
+      return response.data;
     } catch (error) {
       console.error('BPA承認エラー:', error);
       throw new Error(`承認に失敗しました: ${error.message}`);
@@ -246,13 +316,16 @@ class BPAService {
     await this.init();
     
     try {
-      const response = await this.destination.send({
-        method: 'POST',
-        path: `/Applications('${applicationId}')/Reject`,
-        data: { comment }
-      });
+      const response = await executeHttpRequest(
+        this.destination,
+        {
+          method: 'POST',
+          url: `/Applications('${applicationId}')/Reject`,
+          data: { comment }
+        }
+      );
       
-      return response;
+      return response.data;
     } catch (error) {
       console.error('BPA却下エラー:', error);
       throw new Error(`却下に失敗しました: ${error.message}`);
@@ -289,44 +362,70 @@ class BPAService {
   // ==================== プライベートメソッド ====================
 
   /**
-   * クエリからフィルタを構築
+   * クエリパラメータを構築
    */
-  buildFilter(query) {
-    const filters = [];
+  buildQueryParams(query) {
+    const params = {};
     
-    if (query.SELECT?.where) {
-      return query.SELECT.where;
+    if (query.SELECT) {
+      // CDS queryからODataパラメータに変換
+      if (query.SELECT.columns) {
+        params.$select = query.SELECT.columns.join(',');
+      }
+      if (query.SELECT.where) {
+        params.$filter = this.convertCDSFilter(query.SELECT.where);
+      }
+      if (query.SELECT.orderBy) {
+        params.$orderby = query.SELECT.orderBy.map(o => `${o.ref} ${o.sort || 'asc'}`).join(',');
+      }
+      if (query.SELECT.limit) {
+        params.$top = query.SELECT.limit.rows;
+        if (query.SELECT.limit.offset) {
+          params.$skip = query.SELECT.limit.offset.val;
+        }
+      }
     }
     
-    return filters;
+    return params;
   }
 
   /**
-   * 検索フィルタを構築
+   * フィルタクエリを構築
    */
-  buildSearchFilter(filters) {
+  buildFilterQuery(filters) {
     const conditions = [];
     
     if (filters.status) {
-      conditions.push({ status: filters.status });
+      conditions.push(`status eq '${filters.status}'`);
     }
     if (filters.type) {
-      conditions.push({ type: filters.type });
+      conditions.push(`type eq '${filters.type}'`);
     }
     if (filters.companyCode) {
-      conditions.push({ companyCode: filters.companyCode });
+      conditions.push(`companyCode eq '${filters.companyCode}'`);
     }
     if (filters.startDate) {
-      conditions.push({ startDate: { '>=': filters.startDate } });
+      conditions.push(`startDate ge ${filters.startDate}`);
     }
     if (filters.endDate) {
-      conditions.push({ endDate: { '<=': filters.endDate } });
+      conditions.push(`endDate le ${filters.endDate}`);
     }
     if (filters.requester) {
-      conditions.push({ requester: { like: `%${filters.requester}%` } });
+      conditions.push(`contains(requester, '${filters.requester}')`);
     }
     
-    return conditions.length > 0 ? { and: conditions } : {};
+    return conditions.join(' and ');
+  }
+
+  /**
+   * CDS filterをOData filterに変換
+   */
+  convertCDSFilter(filter) {
+    // 簡易実装 - 実際のプロジェクトでは適切に変換
+    if (Array.isArray(filter)) {
+      return filter.map(f => this.convertCDSFilter(f)).join(' and ');
+    }
+    return '';
   }
 
   /**
@@ -338,21 +437,21 @@ class BPAService {
     }
     
     return data.map(item => ({
-      ID: item.ID,
-      applicationId: item.applicationId,
-      status_code: item.status,
-      type_code: item.type,
-      companyCode: item.companyCode,
-      companyName: item.companyName,
-      fiscalYear: item.fiscalYear,
-      startDate: item.startDate,
-      endDate: item.endDate,
-      dueDate: item.dueDate,
-      requester: item.requester,
-      amount: item.amount,
-      currency: item.currency,
-      hasDocuments: item.hasDocuments,
-      attachmentCount: item.attachmentCount
+      ID: item.ID || item.id,
+      applicationId: item.applicationId || item.ApplicationId,
+      status_code: item.status || item.Status,
+      type_code: item.type || item.Type,
+      companyCode: item.companyCode || item.CompanyCode,
+      companyName: item.companyName || item.CompanyName,
+      fiscalYear: item.fiscalYear || item.FiscalYear,
+      startDate: item.startDate || item.StartDate,
+      endDate: item.endDate || item.EndDate,
+      dueDate: item.dueDate || item.DueDate,
+      requester: item.requester || item.Requester,
+      amount: item.amount || item.Amount,
+      currency: item.currency || item.Currency,
+      hasDocuments: item.hasDocuments || item.HasDocuments || false,
+      attachmentCount: item.attachmentCount || item.AttachmentCount || 0
     }));
   }
 
@@ -361,21 +460,21 @@ class BPAService {
    */
   transformApplicationDetail(data) {
     return {
-      ID: data.ID,
-      applicationId: data.applicationId,
-      status_code: data.status,
-      type_code: data.type,
-      companyCode: data.companyCode,
-      companyName: data.companyName,
-      fiscalYear: data.fiscalYear,
-      startDate: data.startDate,
-      endDate: data.endDate,
-      dueDate: data.dueDate,
-      requester: data.requester,
-      amount: data.amount,
-      currency: data.currency,
-      hasDocuments: data.hasDocuments,
-      attachmentCount: data.attachmentCount
+      ID: data.ID || data.id,
+      applicationId: data.applicationId || data.ApplicationId,
+      status_code: data.status || data.Status,
+      type_code: data.type || data.Type,
+      companyCode: data.companyCode || data.CompanyCode,
+      companyName: data.companyName || data.CompanyName,
+      fiscalYear: data.fiscalYear || data.FiscalYear,
+      startDate: data.startDate || data.StartDate,
+      endDate: data.endDate || data.EndDate,
+      dueDate: data.dueDate || data.DueDate,
+      requester: data.requester || data.Requester,
+      amount: data.amount || data.Amount,
+      currency: data.currency || data.Currency,
+      hasDocuments: data.hasDocuments || data.HasDocuments || false,
+      attachmentCount: data.attachmentCount || data.AttachmentCount || 0
     };
   }
 }

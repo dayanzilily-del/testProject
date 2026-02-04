@@ -1,28 +1,31 @@
-const cds = require('@sap/cds');
+const { getDestination } = require('@sap-cloud-sdk/connectivity');
 const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
+const FormData = require('form-data');
 
 /**
- * DMS連携サービス
- * Document Management Serviceとの通信を共通化
+ * DMS連携サービス（Destination使用版）
+ * @sap-cloud-sdk/connectivity を使用してDestinationから認証情報を取得
  */
 class DMSService {
   constructor() {
+    this.destinationName = 'DMS_DEST';
     this.destination = null;
-    this.baseUrl = null;
   }
 
   /**
-   * 初期化（Destinationを取得）
+   * Destinationを取得して初期化
    */
   async init() {
     if (!this.destination) {
       try {
-        const { DMSService } = cds.env.requires;
-        this.destination = DMSService.credentials.destination;
-        this.baseUrl = DMSService.credentials.url || '/dms/v1';
+        this.destination = await getDestination({
+          destinationName: this.destinationName
+        });
+        
+        console.log(`✓ DMS Destination "${this.destinationName}" loaded successfully`);
       } catch (error) {
-        console.error('DMS初期化エラー:', error);
-        throw new Error('DMSサービスの初期化に失敗しました');
+        console.error('DMS Destination取得エラー:', error);
+        throw new Error(`Destination "${this.destinationName}" の取得に失敗しました`);
       }
     }
     return this.destination;
@@ -41,6 +44,7 @@ class DMSService {
     await this.init();
     
     try {
+      // FormDataを作成
       const formData = new FormData();
       formData.append('file', content, {
         filename: fileName,
@@ -55,19 +59,19 @@ class DMSService {
       formData.append('propertyValue[2]', applicationId);
       
       const response = await executeHttpRequest(
-        { destinationName: this.destination },
+        this.destination,
         {
           method: 'POST',
-          url: `${this.baseUrl}/browser/root`,
+          url: '/browser/root',
           data: formData,
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
+          headers: formData.getHeaders()
         }
       );
       
       if (response.data && response.data.succinctProperties) {
-        return response.data.succinctProperties['cmis:objectId'];
+        const documentId = response.data.succinctProperties['cmis:objectId'];
+        console.log(`✓ File uploaded: ${fileName} (${documentId})`);
+        return documentId;
       }
       
       throw new Error('DMS文書IDの取得に失敗しました');
@@ -87,10 +91,10 @@ class DMSService {
     
     try {
       const response = await executeHttpRequest(
-        { destinationName: this.destination },
+        this.destination,
         {
           method: 'GET',
-          url: `${this.baseUrl}/browser/root`,
+          url: '/browser/root',
           params: {
             cmisselector: 'content',
             objectId: documentId
@@ -116,10 +120,10 @@ class DMSService {
     
     try {
       await executeHttpRequest(
-        { destinationName: this.destination },
+        this.destination,
         {
           method: 'POST',
-          url: `${this.baseUrl}/browser/root`,
+          url: '/browser/root',
           params: {
             cmisaction: 'delete',
             objectId: documentId
@@ -127,6 +131,7 @@ class DMSService {
         }
       );
       
+      console.log(`✓ File deleted: ${documentId}`);
       return true;
     } catch (error) {
       console.error('DMSファイル削除エラー:', error);
@@ -144,10 +149,10 @@ class DMSService {
     
     try {
       const response = await executeHttpRequest(
-        { destinationName: this.destination },
+        this.destination,
         {
           method: 'GET',
-          url: `${this.baseUrl}/browser/root`,
+          url: '/browser/root',
           params: {
             cmisselector: 'children',
             filter: `sap:applicationId='${applicationId}'`
@@ -182,8 +187,9 @@ class DMSService {
     await this.init();
     
     try {
-      // DMSのプレビュー機能を使用
-      return `${this.baseUrl}/browser/root?cmisselector=content&objectId=${documentId}&rendition=preview`;
+      // Destinationの設定からbase URLを取得
+      const baseUrl = this.destination.url || '';
+      return `${baseUrl}/browser/root?cmisselector=content&objectId=${documentId}&rendition=preview`;
     } catch (error) {
       console.error('DMSプレビューURL取得エラー:', error);
       return null;
@@ -200,10 +206,10 @@ class DMSService {
     
     try {
       const response = await executeHttpRequest(
-        { destinationName: this.destination },
+        this.destination,
         {
           method: 'GET',
-          url: `${this.baseUrl}/browser/root`,
+          url: '/browser/root',
           params: {
             cmisselector: 'object',
             objectId: documentId
@@ -290,14 +296,12 @@ class DMSService {
       formData.append('major', 'true');
       
       const response = await executeHttpRequest(
-        { destinationName: this.destination },
+        this.destination,
         {
           method: 'POST',
-          url: `${this.baseUrl}/browser/root`,
+          url: '/browser/root',
           data: formData,
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
+          headers: formData.getHeaders()
         }
       );
       
