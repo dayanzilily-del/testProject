@@ -1,0 +1,80 @@
+sap.ui.define([
+  "sap/ui/mdc/TableDelegate",
+  "sap/ui/mdc/table/Column",
+  "sap/m/Text",
+  "your/app/model/tablePropertyInfos"
+], function (TableDelegate, Column, Text, TablePropertyInfos) {
+  "use strict";
+
+  const JSONTableDelegate = Object.assign({}, TableDelegate);
+
+  function _getPayload(oTable){ return (oTable.getPayload && oTable.getPayload()) || {}; }
+
+  function _getPropertyInfos(oTable) {
+    const oPayload = _getPayload(oTable);
+
+    // 仍然支持直接传数组（小表可以这么干）
+    if (Array.isArray(oPayload.propertyInfos)) return oPayload.propertyInfos;
+
+    // 大表走 key
+    if (oPayload.propertyInfoKey && TablePropertyInfos[oPayload.propertyInfoKey]) {
+      return TablePropertyInfos[oPayload.propertyInfoKey];
+    }
+
+    throw new Error("Need payload.propertyInfos (array) OR payload.propertyInfoKey (exists in tablePropertyInfos.js).");
+  }
+
+  function _getModelName(oTable){
+    const m = _getPayload(oTable).modelName;
+    if (!m) throw new Error("payload.modelName required");
+    return m;
+  }
+
+  JSONTableDelegate.fetchProperties = async (oTable) => _getPropertyInfos(oTable);
+
+  function _createColumn(sId, oPropertyInfo, oTable) {
+    const sModelName = _getModelName(oTable);
+    return new Column(sId, {
+      propertyKey: oPropertyInfo.key,
+      header: oPropertyInfo.label,
+      template: new Text({
+        text: { path: sModelName + ">" + oPropertyInfo.path, type: oPropertyInfo.dataType }
+      })
+    });
+  }
+
+  JSONTableDelegate.addItem = async (oTable, sPropertyKey) => {
+    const a = _getPropertyInfos(oTable);
+    const p = a.find(x => x.key === sPropertyKey);
+    if (!p) throw new Error("Unknown propertyKey: " + sPropertyKey);
+    return _createColumn(oTable.getId() + "--col-" + sPropertyKey, p, oTable);
+  };
+
+  JSONTableDelegate.updateBindingInfo = (oTable, oBindingInfo) => {
+    TableDelegate.updateBindingInfo.call(JSONTableDelegate, oTable, oBindingInfo);
+    const path = _getPayload(oTable).bindingPath;
+    if (!path) throw new Error("payload.bindingPath required");
+    oBindingInfo.path = path;
+  };
+
+  return JSONTableDelegate;
+});
+sap.ui.define([], function () {
+  "use strict";
+
+  return {
+    // 表1
+    RequestList: [
+      { key: "rank", label: "Rank", path: "rank", dataType: "sap.ui.model.type.Integer" },
+      { key: "name", label: "Name", path: "name", dataType: "sap.ui.model.type.String" }
+      // ...很多字段
+    ],
+
+    // 表2
+    ApprovalList: [
+      { key: "wfid", label: "WF ID", path: "wfid", dataType: "sap.ui.model.type.String" },
+      { key: "status", label: "Status", path: "status", dataType: "sap.ui.model.type.String" }
+      // ...很多字段
+    ]
+  };
+});
